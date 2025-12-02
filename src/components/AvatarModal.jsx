@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Send, Mic } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
     createSession,
     initializeAgoraSDK,
@@ -7,7 +9,8 @@ import {
     joinChat,
     sendMessage as sendSDKMessage,
     setupSDKEventHandlers,
-    leaveChannel
+    leaveChannel,
+    closeSession
 } from '../services/akoolService';
 import './AvatarModal.css';
 
@@ -19,6 +22,7 @@ const AvatarModal = ({ isOpen, onClose }) => {
     const agoraSDKRef = useRef(null);
     const videoContainerRef = useRef(null);
     const messagesEndRef = useRef(null);
+    const sessionIdRef = useRef(null);
 
     useEffect(() => {
         if (isOpen) {
@@ -37,10 +41,55 @@ const AvatarModal = ({ isOpen, onClose }) => {
         scrollToBottom();
     }, [messages]);
 
+    const formatSDKMessage = (message) => {
+        const content = typeof message === 'string'
+            ? message
+            : message?.text
+            ?? message?.content
+            ?? message?.message
+            ?? (message ? JSON.stringify(message) : '');
+
+        return {
+            id: message?.id || `msg-${Date.now()}`,
+            type: message?.isSentByMe ? 'user' : 'ai',
+            content: content?.trim() || '',
+            timestamp: new Date()
+        };
+    };
+
+    const upsertMessageFromSDK = (message) => {
+        if (!message) return;
+
+        setMessages(prev => {
+            const formatted = formatSDKMessage(message);
+            const existingIndex = prev.findIndex(msg => msg.id === formatted.id);
+
+            if (existingIndex === -1) {
+                return [...prev, formatted];
+            }
+
+            const updatedMessages = [...prev];
+            updatedMessages[existingIndex] = {
+                ...updatedMessages[existingIndex],
+                content: formatted.content || updatedMessages[existingIndex].content
+            };
+            return updatedMessages;
+        });
+    };
+
     const cleanup = async () => {
         if (agoraSDKRef.current) {
             await leaveChannel(agoraSDKRef.current);
             agoraSDKRef.current = null;
+        }
+        if (sessionIdRef.current) {
+            try {
+                await closeSession(sessionIdRef.current);
+            } catch (error) {
+                console.error('Failed to close session:', error);
+            } finally {
+                sessionIdRef.current = null;
+            }
         }
         setIsConnected(false);
         setMessages([]);
@@ -53,6 +102,20 @@ const AvatarModal = ({ isOpen, onClose }) => {
             // Step 1: Create session to get Agora credentials
             const sessionData = await createSession();
             console.log('Session created:', sessionData);
+
+            const sessionId =
+                sessionData?.session_id ||
+                sessionData?.sessionId ||
+                sessionData?.data?.session_id ||
+                sessionData?.data?.sessionId ||
+                sessionData?.credentials?.session_id ||
+                sessionData?.credentials?.sessionId;
+
+            if (sessionId) {
+                sessionIdRef.current = sessionId;
+            } else {
+                console.warn('Session created but no session ID returned. Session close may fail.');
+            }
 
             // Extract Agora credentials from session response
             // The response structure may vary, so we check multiple possible formats
@@ -94,17 +157,11 @@ const AvatarModal = ({ isOpen, onClose }) => {
                 },
                 onMessageReceived: (message) => {
                     console.log('Message received:', message);
-                    // Extract text from message (format may vary)
-                    const messageText = typeof message === 'string'
-                        ? message
-                        : message.text || message.content || message.message || JSON.stringify(message);
-
-                    setMessages(prev => [...prev, {
-                        id: Date.now(),
-                        type: 'ai',
-                        content: messageText,
-                        timestamp: new Date()
-                    }]);
+                    upsertMessageFromSDK(message);
+                },
+                onMessageUpdated: (message) => {
+                    console.log('Message updated:', message);
+                    upsertMessageFromSDK(message);
                 },
                 onException: (error) => {
                     console.error('SDK exception:', error);
@@ -137,6 +194,7 @@ const AvatarModal = ({ isOpen, onClose }) => {
             console.error('Failed to initialize session:', error);
             setIsLoading(false);
             setIsConnected(false);
+            sessionIdRef.current = null;
 
             // Show detailed error message
             let errorMessage = 'Sorry, I\'m having trouble connecting. Please try again later.';
@@ -165,14 +223,6 @@ const AvatarModal = ({ isOpen, onClose }) => {
     const handleSend = async () => {
         if (!inputValue.trim() || isLoading || !isConnected || !agoraSDKRef.current) return;
 
-        const userMessage = {
-            id: Date.now(),
-            type: 'user',
-            content: inputValue.trim(),
-            timestamp: new Date()
-        };
-
-        setMessages(prev => [...prev, userMessage]);
         const messageText = inputValue.trim();
         setInputValue('');
         setIsLoading(true);
@@ -203,6 +253,27 @@ const AvatarModal = ({ isOpen, onClose }) => {
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    };
+
+    const renderMessageContent = (message) => {
+        if (message.type === 'ai') {
+            return (
+                <div className="avatar-message-content">
+                    <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={{
+                            a: ({ node, ...props }) => (
+                                <a target="_blank" rel="noopener noreferrer" {...props} />
+                            )
+                        }}
+                    >
+                        {message.content}
+                    </ReactMarkdown>
+                </div>
+            );
+        }
+
+        return <p className="avatar-message-content">{message.content}</p>;
     };
 
     if (!isOpen) return null;
@@ -252,7 +323,7 @@ const AvatarModal = ({ isOpen, onClose }) => {
                                 key={message.id}
                                 className={`avatar-message avatar-message--${message.type}`}
                             >
-                                <p>{message.content}</p>
+                                {renderMessageContent(message)}
                             </div>
                         ))}
                         {isLoading && (

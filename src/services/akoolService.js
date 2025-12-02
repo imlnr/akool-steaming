@@ -20,7 +20,7 @@ export const createSession = async () => {
         const url = `${AKOOL_API_BASE}/api/open/v4/liveAvatar/session/create`;
         const requestBody = {
             avatar_id: AKOOL_AVATAR_NAME,
-            duration: 100,
+            duration: 60,
             knowledge_id: AKOOL_KW_ID,
             voice_id: AKOOL_VOICE_ID
         };
@@ -183,6 +183,12 @@ export const setupSDKEventHandlers = (agoraSDK, callbacks = {}) => {
                 callbacks.onMessageReceived(message);
             }
         },
+        onMessageUpdated: (message) => {
+            console.log('Message updated:', message);
+            if (callbacks.onMessageUpdated) {
+                callbacks.onMessageUpdated(message);
+            }
+        },
         onUserPublished: async (user, mediaType) => {
             console.log('User published:', user, mediaType);
             if (callbacks.onUserPublished) {
@@ -198,10 +204,48 @@ export const setupSDKEventHandlers = (agoraSDK, callbacks = {}) => {
 export const leaveChannel = async (agoraSDK) => {
     try {
         if (agoraSDK) {
-            await agoraSDK.leave();
+            if (typeof agoraSDK.leaveChannel === 'function') {
+                await agoraSDK.leaveChannel();
+            } else if (typeof agoraSDK.leave === 'function') {
+                await agoraSDK.leave();
+            }
             console.log('Left Agora channel');
         }
     } catch (error) {
         console.error('Error leaving channel:', error);
+    }
+};
+
+/**
+ * Close an active Akool session
+ * @param {string} sessionId - Session identifier returned from createSession
+ */
+export const closeSession = async (sessionId) => {
+    try {
+        if (!sessionId) {
+            console.warn('closeSession called without a sessionId');
+            return;
+        }
+
+        const url = `${AKOOL_API_BASE}/api/open/v4/liveAvatar/session/close`;
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${AKOOL_BEARER_TOKEN}`
+            },
+            body: JSON.stringify({ session_id: sessionId })
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Failed to close session (${response.status}): ${errorText}`);
+        }
+
+        const data = await response.json();
+        console.log('Session closed successfully:', data);
+        return data;
+    } catch (error) {
+        console.error('Error closing session:', error);
     }
 };
